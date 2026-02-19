@@ -1,24 +1,16 @@
 {
-  "name": "tasipulse",
-  "private": true,
-  "version": "0.0.0",
-  "type": "module",
+  "name": "tasipulse-server",
+  "version": "1.0.0",
+  "description": "TasiPulse automated social media pipeline",
+  "main": "src/run.js",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "start": "node src/run.js",
+    "dev": "node src/run.js"
   },
   "dependencies": {
-    "react-dom": "^19.2.4",
-    "@google/genai": "^1.41.0",
-    "lucide-react": "^0.574.0",
-    "react": "^19.2.4",
-    "html-to-image": "1.11.11"
-  },
-  "devDependencies": {
-    "@types/node": "^22.14.0",
-    "@vitejs/plugin-react": "^5.0.0",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "puppeteer": "^21.0.0",
+    "axios": "^1.6.0",
+    "xml2js": "^0.6.2",
+    "dotenv": "^16.3.1"
   }
 }

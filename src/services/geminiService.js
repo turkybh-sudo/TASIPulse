@@ -1,7 +1,7 @@
 // src/services/geminiService.js
 const axios = require('axios');
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent';
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -16,7 +16,6 @@ You are a professional financial news editor for "TasiPulse", a Saudi market new
 
 Task: Analyze the following news article and extract/generate content for a social media post.
 
-Input Source: ${article.source}
 Input Title: ${article.title}
 Input Text: ${article.description}
 
@@ -27,6 +26,10 @@ Requirements:
 4. Extract 3-4 key bullet points in both languages (concise, max 60 chars each).
 5. Generate a social media caption with relevant Arabic/English hashtags (max 300 chars).
 6. Extract any numerical figures (prices, %, billions, etc.) into a structured list. Max 3 figures. If no specific figures exist, return empty array.
+   For the "trend" field use intelligent analysis:
+   - "up" if the figure represents growth, increase, profit, rise, positive return, or improvement
+   - "down" if the figure represents decline, loss, drop, decrease, negative return, or contraction
+   - "neutral" if the figure is a static value like a price, rate, count, or percentage with no directional context
 
 IMPORTANT: Arabic text must be real Arabic script (عربي), not romanized transliteration.
 
@@ -86,7 +89,7 @@ Return ONLY valid JSON, no markdown, matching this exact schema:
       const isLast = attempt === retries;
 
       if (is429 && !isLast) {
-        const waitMs = attempt * 60000; // 1min, 2min, 3min, 4min
+        const waitMs = attempt * 60000;
         console.warn(`[Gemini] Rate limited (429). Waiting ${waitMs / 60000} min before retry ${attempt}/${retries}...`);
         await sleep(waitMs);
       } else {

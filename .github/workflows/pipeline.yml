@@ -25,7 +25,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
+          - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
       # 3. Install dependencies (including Puppeteer + Chromium)
       - name: Install dependencies

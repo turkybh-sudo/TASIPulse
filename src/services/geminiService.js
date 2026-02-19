@@ -3,7 +3,9 @@ const axios = require('axios');
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
 
-const enrichArticle = async (article) => {
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+const enrichArticle = async (article, retries = 4) => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error('GEMINI_API_KEY not set');
 
@@ -32,7 +34,7 @@ Return ONLY valid JSON, no markdown, matching this exact schema:
 {
   "headline_en": "string",
   "headline_ar": "string",
-  "summary_en": "string", 
+  "summary_en": "string",
   "summary_ar": "string",
   "key_points_en": ["string", "string", "string"],
   "key_points_ar": ["string", "string", "string"],
@@ -59,41 +61,57 @@ Return ONLY valid JSON, no markdown, matching this exact schema:
     }
   };
 
-  const response = await axios.post(
-    `${GEMINI_API_URL}?key=${apiKey}`,
-    requestBody,
-    {
-      headers: { 'Content-Type': 'application/json' },
-      timeout: 30000
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const response = await axios.post(
+        `${GEMINI_API_URL}?key=${apiKey}`,
+        requestBody,
+        {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 30000
+        }
+      );
+
+      const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) throw new Error('Empty response from Gemini');
+
+      const cleanJson = text.replace(/```json\n?|\n?```/g, '').trim();
+      const enriched = JSON.parse(cleanJson);
+
+      console.log(`[Gemini] ✅ Enriched: "${enriched.headline_en?.substring(0, 50)}"`);
+      return enriched;
+
+    } catch (err) {
+      const is429 = err.response?.status === 429;
+      const isLast = attempt === retries;
+
+      if (is429 && !isLast) {
+        const waitMs = attempt * 60000; // 1min, 2min, 3min, 4min
+        console.warn(`[Gemini] Rate limited (429). Waiting ${waitMs / 60000} min before retry ${attempt}/${retries}...`);
+        await sleep(waitMs);
+      } else {
+        throw err;
+      }
     }
-  );
-
-  const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error('Empty response from Gemini');
-
-  // Clean up any markdown code fences just in case
-  const cleanJson = text.replace(/```json\n?|\n?```/g, '').trim();
-  const enriched = JSON.parse(cleanJson);
-
-  console.log(`[Gemini] Enriched successfully: "${enriched.headline_en?.substring(0, 50)}"`);
-  return enriched;
+  }
 };
 
 const enrichArticles = async (articles) => {
   const results = [];
 
-  for (const article of articles) {
+  for (let i = 0; i < articles.length; i++) {
+    const article = articles[i];
+
+    if (i > 0) {
+      console.log('[Gemini] Waiting 60s before next article...');
+      await sleep(60000);
+    }
+
     try {
       const enriched = await enrichArticle(article);
       results.push({ article, enriched });
-
-      // Small delay between API calls to avoid rate limiting
-      if (articles.indexOf(article) < articles.length - 1) {
-        await new Promise(r => setTimeout(r, 1000));
-      }
     } catch (err) {
-      console.error(`[Gemini] Failed to enrich "${article.title}": ${err.message}`);
-      // Skip failed articles rather than crashing the whole pipeline
+      console.error(`[Gemini] ❌ Failed to enrich "${article.title}": ${err.message}`);
     }
   }
 

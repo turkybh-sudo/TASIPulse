@@ -5,9 +5,22 @@ const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-const enrichArticle = async (article, retries = 4) => {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error('GEMINI_API_KEY not set');
+// Rotate through available API keys
+const getApiKeys = () => {
+  const keys = [
+    process.env.GEMINI_API_KEY,
+    process.env.GEMINI_API_KEY_2,
+    process.env.GEMINI_API_KEY_3
+  ].filter(Boolean); // Remove any undefined/empty keys
+
+  if (keys.length === 0) throw new Error('No GEMINI_API_KEY configured');
+  console.log(`[Gemini] ${keys.length} API key(s) available`);
+  return keys;
+};
+
+const enrichArticle = async (article) => {
+  const apiKeys = getApiKeys();
+  let lastError;
 
   console.log(`[Gemini] Enriching: "${article.title.substring(0, 60)}..."`);
 
@@ -64,7 +77,11 @@ Return ONLY valid JSON, no markdown, matching this exact schema:
     }
   };
 
-  for (let attempt = 1; attempt <= retries; attempt++) {
+  // Try each key in order, move to next on 429
+  for (let keyIndex = 0; keyIndex < apiKeys.length; keyIndex++) {
+    const apiKey = apiKeys[keyIndex];
+    console.log(`[Gemini] Trying API key ${keyIndex + 1}/${apiKeys.length}...`);
+
     try {
       const response = await axios.post(
         `${GEMINI_API_URL}?key=${apiKey}`,
@@ -81,22 +98,27 @@ Return ONLY valid JSON, no markdown, matching this exact schema:
       const cleanJson = text.replace(/```json\n?|\n?```/g, '').trim();
       const enriched = JSON.parse(cleanJson);
 
-      console.log(`[Gemini] ✅ Enriched: "${enriched.headline_en?.substring(0, 50)}"`);
+      console.log(`[Gemini] ✅ Enriched with key ${keyIndex + 1}: "${enriched.headline_en?.substring(0, 50)}"`);
       return enriched;
 
     } catch (err) {
+      lastError = err;
       const is429 = err.response?.status === 429;
-      const isLast = attempt === retries;
 
-      if (is429 && !isLast) {
-        const waitMs = attempt * 60000;
-        console.warn(`[Gemini] Rate limited (429). Waiting ${waitMs / 60000} min before retry ${attempt}/${retries}...`);
-        await sleep(waitMs);
+      if (is429) {
+        console.warn(`[Gemini] Key ${keyIndex + 1} rate limited (429) — trying next key...`);
+        // Small wait before trying next key
+        await sleep(2000);
       } else {
+        // Non-429 error — don't bother trying other keys for this type of error
         throw err;
       }
     }
   }
+
+  // All keys exhausted
+  console.error(`[Gemini] ❌ All ${apiKeys.length} API keys rate limited`);
+  throw lastError;
 };
 
 const enrichArticles = async (articles) => {
@@ -106,8 +128,8 @@ const enrichArticles = async (articles) => {
     const article = articles[i];
 
     if (i > 0) {
-      console.log('[Gemini] Waiting 60s before next article...');
-      await sleep(60000);
+      console.log('[Gemini] Waiting 15s before next article...');
+      await sleep(15000); // Reduced from 60s since we have key rotation now
     }
 
     try {

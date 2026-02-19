@@ -1,11 +1,6 @@
 // src/services/xService.js
-// Posts to X (Twitter) using API v2 with OAuth 1.0a
-// Uploads both EN and AR images, then posts a single tweet with both
-
 const axios = require('axios');
 const crypto = require('crypto');
-
-// --- OAuth 1.0a Helpers ---
 
 const percentEncode = (str) =>
   encodeURIComponent(str).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
@@ -20,7 +15,6 @@ const generateOAuthHeader = (method, url, params, credentials) => {
     oauth_version: '1.0'
   };
 
-  // Combine all params for signature
   const allParams = { ...params, ...oauthParams };
   const sortedParams = Object.keys(allParams)
     .sort()
@@ -41,20 +35,16 @@ const generateOAuthHeader = (method, url, params, credentials) => {
 
   oauthParams.oauth_signature = signature;
 
-  const headerValue = 'OAuth ' + Object.keys(oauthParams)
+  return 'OAuth ' + Object.keys(oauthParams)
     .sort()
     .map(key => `${percentEncode(key)}="${percentEncode(oauthParams[key])}"`)
     .join(', ');
-
-  return headerValue;
 };
 
-// --- Upload media to X (chunked upload protocol) ---
-
-const uploadMedia = async (imageBuffer, credentials) => {
+const uploadMedia = async (imageBuffer, credentials, label) => {
   const uploadUrl = 'https://upload.twitter.com/1.1/media/upload.json';
 
-  // Step 1: INIT
+  // INIT
   const initParams = {
     command: 'INIT',
     total_bytes: imageBuffer.length.toString(),
@@ -66,18 +56,13 @@ const uploadMedia = async (imageBuffer, credentials) => {
   const initResponse = await axios.post(
     uploadUrl,
     new URLSearchParams(initParams).toString(),
-    {
-      headers: {
-        Authorization: initHeader,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
-    }
+    { headers: { Authorization: initHeader, 'Content-Type': 'application/x-www-form-urlencoded' } }
   );
 
   const mediaId = initResponse.data.media_id_string;
-  console.log(`[X] Media INIT - ID: ${mediaId}`);
+  console.log(`[X] ${label} INIT - ID: ${mediaId}`);
 
-  // Step 2: APPEND — use multipart/form-data with Buffer (Node-native, no browser FormData)
+  // APPEND
   const appendHeader = generateOAuthHeader('POST', uploadUrl, {}, credentials);
   const boundary = `----TasiPulseBoundary${Date.now()}`;
 
@@ -101,27 +86,20 @@ const uploadMedia = async (imageBuffer, credentials) => {
     maxBodyLength: Infinity
   });
 
-  console.log(`[X] Media APPEND done`);
+  console.log(`[X] ${label} APPEND done`);
 
-  // Step 3: FINALIZE
+  // FINALIZE
   const finalizeParams = { command: 'FINALIZE', media_id: mediaId };
   const finalizeHeader = generateOAuthHeader('POST', uploadUrl, finalizeParams, credentials);
-  await axios.post(
+  const finalizeResponse = await axios.post(
     uploadUrl,
     new URLSearchParams(finalizeParams).toString(),
-    {
-      headers: {
-        Authorization: finalizeHeader,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
-    }
+    { headers: { Authorization: finalizeHeader, 'Content-Type': 'application/x-www-form-urlencoded' } }
   );
 
-  console.log(`[X] Media FINALIZE done - mediaId: ${mediaId}`);
+  console.log(`[X] ${label} FINALIZE done - state: ${finalizeResponse.data?.processing_info?.state || 'ready'}`);
   return mediaId;
 };
-
-// --- Post tweet with media ---
 
 const postToX = async ({ enBuffer, arBuffer, enriched }) => {
   const credentials = {
@@ -137,54 +115,53 @@ const postToX = async ({ enBuffer, arBuffer, enriched }) => {
 
   console.log('[X] Starting post pipeline...');
 
-  // Upload both images
-  const [enMediaId, arMediaId] = await Promise.all([
-    uploadMedia(enBuffer, credentials),
-    uploadMedia(arBuffer, credentials)
-  ]);
+  // Upload sequentially to avoid any timing conflicts
+  const enMediaId = await uploadMedia(enBuffer, credentials, 'EN');
+  const arMediaId = await uploadMedia(arBuffer, credentials, 'AR');
 
-  // Build tweet text - EN caption + AR caption combined
-  // X allows 280 chars. We keep it tight.
   const caption = buildXCaption(enriched);
+  console.log(`[X] Caption length: ${caption.length} chars`);
 
-  // Post tweet via v2 API
   const tweetUrl = 'https://api.twitter.com/2/tweets';
   const tweetBody = {
     text: caption,
-    media: {
-      media_ids: [enMediaId, arMediaId] // Both images in one tweet
-    }
+    media: { media_ids: [enMediaId, arMediaId] }
   };
 
   const tweetHeader = generateOAuthHeader('POST', tweetUrl, {}, credentials);
-  const response = await axios.post(tweetUrl, tweetBody, {
-    headers: {
-      Authorization: tweetHeader,
-      'Content-Type': 'application/json'
-    }
-  });
+
+  let response;
+  try {
+    response = await axios.post(tweetUrl, tweetBody, {
+      headers: {
+        Authorization: tweetHeader,
+        'Content-Type': 'application/json'
+      }
+    });
+  } catch (err) {
+    // Log the full X error detail for debugging
+    const detail = err.response?.data;
+    console.error('[X] Tweet post error detail:', JSON.stringify(detail, null, 2));
+    throw err;
+  }
 
   const tweetId = response.data?.data?.id;
-  console.log(`[X] ✅ Posted successfully! Tweet ID: ${tweetId}`);
+  console.log(`[X] ✅ Posted! Tweet ID: ${tweetId}`);
   return { success: true, tweetId, platform: 'x' };
 };
 
 const buildXCaption = (enriched) => {
-  // Build a bilingual caption that fits 280 chars
   const en = enriched.caption_en || enriched.headline_en || '';
   const ar = enriched.caption_ar || enriched.headline_ar || '';
 
-  // Try full bilingual first
   const full = `${en}\n\n${ar}`;
   if (full.length <= 275) return full;
 
-  // Truncate EN if needed
   const maxEn = 130;
   const truncatedEn = en.length > maxEn ? en.substring(0, maxEn - 3) + '...' : en;
   const truncated = `${truncatedEn}\n\n${ar}`;
   if (truncated.length <= 275) return truncated;
 
-  // Last resort: EN only with hashtags
   return en.substring(0, 272) + '...';
 };
 

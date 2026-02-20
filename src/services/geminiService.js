@@ -1,7 +1,7 @@
 // src/services/geminiService.js
 const axios = require('axios');
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 

@@ -4,13 +4,17 @@
   "description": "TasiPulse automated social media pipeline",
   "main": "src/run.js",
   "scripts": {
-    "start": "node src/run.js",
-    "dev": "node src/run.js"
+    "start": "node src/run.js"
   },
   "dependencies": {
-    "puppeteer": "^21.0.0",
     "axios": "^1.6.0",
-    "xml2js": "^0.6.2",
-    "dotenv": "^16.3.1"
+    "dotenv": "^16.3.1",
+    "puppeteer": "^21.11.0",
+    "xml2js": "^0.6.2"
+  },
+  "config": {
+    "puppeteer": {
+      "skip_chromium_download": true
+    }
   }
 }

@@ -5,13 +5,12 @@ const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Rotate through available API keys
 const getApiKeys = () => {
   const keys = [
     process.env.GEMINI_API_KEY,
     process.env.GEMINI_API_KEY_2,
     process.env.GEMINI_API_KEY_3
-  ].filter(Boolean); // Remove any undefined/empty keys
+  ].filter(Boolean);
 
   if (keys.length === 0) throw new Error('No GEMINI_API_KEY configured');
   console.log(`[Gemini] ${keys.length} API key(s) available`);
@@ -45,8 +44,9 @@ Requirements:
    - "neutral" if the figure is a static value like a price, rate, count, or percentage with no directional context
 
 IMPORTANT: Arabic text must be real Arabic script (عربي), not romanized transliteration.
+IMPORTANT: Return ONLY valid JSON. No markdown, no code blocks, no explanation. Just the raw JSON object.
 
-Return ONLY valid JSON, no markdown, matching this exact schema:
+Schema:
 {
   "headline_en": "string",
   "headline_ar": "string",
@@ -73,11 +73,10 @@ Return ONLY valid JSON, no markdown, matching this exact schema:
     generationConfig: {
       responseMimeType: 'application/json',
       temperature: 0.3,
-      maxOutputTokens: 1500
+      maxOutputTokens: 4000
     }
   };
 
-  // Try each key in order, move to next on 429
   for (let keyIndex = 0; keyIndex < apiKeys.length; keyIndex++) {
     const apiKey = apiKeys[keyIndex];
     console.log(`[Gemini] Trying API key ${keyIndex + 1}/${apiKeys.length}...`);
@@ -107,16 +106,14 @@ Return ONLY valid JSON, no markdown, matching this exact schema:
 
       if (is429) {
         console.warn(`[Gemini] Key ${keyIndex + 1} rate limited (429) — trying next key...`);
-        // Small wait before trying next key
         await sleep(2000);
       } else {
-        // Non-429 error — don't bother trying other keys for this type of error
+        console.error(`[Gemini] Key ${keyIndex + 1} error: ${err.message}`);
         throw err;
       }
     }
   }
 
-  // All keys exhausted
   console.error(`[Gemini] ❌ All ${apiKeys.length} API keys rate limited`);
   throw lastError;
 };
@@ -129,7 +126,7 @@ const enrichArticles = async (articles) => {
 
     if (i > 0) {
       console.log('[Gemini] Waiting 15s before next article...');
-      await sleep(15000); // Reduced from 60s since we have key rotation now
+      await sleep(15000);
     }
 
     try {

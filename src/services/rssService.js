@@ -19,15 +19,15 @@ const SOURCES = {
 };
 
 const POSTED_FILE = 'posted.json';
-const MAX_HISTORY = 100; // Remember last 100 posted titles
+const MAX_HISTORY = 100;
 
 // ── Posted history helpers ───────────────────────────────────────────────────
 
-const loadPostedTitles = () => {
+const loadPostedHistory = () => {
   try {
     if (fs.existsSync(POSTED_FILE)) {
       const data = JSON.parse(fs.readFileSync(POSTED_FILE, 'utf8'));
-      console.log(`[RSS] Loaded ${data.length} previously posted titles`);
+      console.log(`[RSS] Loaded ${data.length} previously posted articles`);
       return data;
     }
   } catch (e) {
@@ -36,13 +36,17 @@ const loadPostedTitles = () => {
   return [];
 };
 
-const savePostedTitles = (newTitles) => {
+const savePostedTitles = (articles) => {
   try {
-    const existing = loadPostedTitles();
-    const combined = [...existing, ...newTitles];
-    const kept = combined.slice(-MAX_HISTORY); // Keep last 100
+    const existing = loadPostedHistory();
+    const newEntries = articles.map(a => ({
+      title: typeof a === 'string' ? a : a.title,
+      url: typeof a === 'string' ? null : a.url
+    }));
+    const combined = [...existing, ...newEntries];
+    const kept = combined.slice(-MAX_HISTORY);
     fs.writeFileSync(POSTED_FILE, JSON.stringify(kept, null, 2));
-    console.log(`[RSS] Saved ${newTitles.length} new titles to history (total: ${kept.length})`);
+    console.log(`[RSS] Saved ${newEntries.length} new articles to history (total: ${kept.length})`);
   } catch (e) {
     console.warn('[RSS] Could not save posted history:', e.message);
   }
@@ -207,13 +211,13 @@ const fetchTopArticles = async (limit = 3) => {
     console.log(`  ${i + 1}. [${a.score}pts] ${a.title.substring(0, 70)}`);
   });
 
-  // Filter out already posted articles
-  const postedTitles = loadPostedTitles();
+  // Filter out already posted articles (by URL first, fall back to title)
+  const postedHistory = loadPostedHistory();
   const deduped = scored.filter(a => {
-    const normalised = a.title.toLowerCase().trim();
-    const alreadyPosted = postedTitles.some(t =>
-      t.toLowerCase().trim() === normalised
-    );
+    const alreadyPosted = postedHistory.some(p => {
+      if (p.url && a.url) return p.url === a.url;
+      return p.title?.toLowerCase().trim() === a.title.toLowerCase().trim();
+    });
     if (alreadyPosted) {
       console.log(`[RSS] ⏭️  Skipping already posted: ${a.title.substring(0, 60)}`);
     }

@@ -1,37 +1,32 @@
 // src/services/imageService.js
-// Uses Puppeteer to render the card HTML and capture a high-res PNG
-
 const puppeteer = require('puppeteer');
 const { generateCardHtml } = require('../templates/cardTemplate');
 
 const captureCard = async (config) => {
   const { platform } = config;
   const isStory = platform === 'story';
-
   const width = isStory ? 360 : 450;
   const height = isStory ? 640 : 450;
-
-  // Scale 3x for high resolution (1350x1350 or 1080x1920)
   const scale = 3;
 
   const html = generateCardHtml(config);
-
   let browser = null;
+
   try {
     browser = await puppeteer.launch({
       headless: 'new',
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--font-render-hinting=none' // better text rendering
+        '--font-render-hinting=none'
       ]
     });
 
     const page = await browser.newPage();
 
-    // Set viewport to card size (pre-scaled)
     await page.setViewport({
       width,
       height,
@@ -39,11 +34,7 @@ const captureCard = async (config) => {
     });
 
     await page.setContent(html, { waitUntil: 'networkidle0' });
-
-    // Wait for fonts to load
     await page.evaluate(() => document.fonts.ready);
-
-    // Extra settle time for gradients/blur
     await new Promise(r => setTimeout(r, 300));
 
     const screenshot = await page.screenshot({
@@ -52,17 +43,14 @@ const captureCard = async (config) => {
       omitBackground: false
     });
 
-    return screenshot; // Returns a Buffer
-
+    return screenshot;
   } finally {
     if (browser) await browser.close();
   }
 };
 
-// Generate both EN and AR cards for an enriched article
 const generatePostImages = async (enriched, articleDate) => {
   const date = articleDate || new Date();
-
   const hasFigures = enriched.figures && enriched.figures.length > 0;
 
   const [enBuffer, arBuffer] = await Promise.all([
@@ -73,7 +61,7 @@ const generatePostImages = async (enriched, articleDate) => {
       figures: hasFigures ? enriched.figures : [],
       date,
       lang: 'en',
-      platform: 'instagram', // square format
+      platform: 'instagram',
       source: ''
     }),
     captureCard({
@@ -91,8 +79,8 @@ const generatePostImages = async (enriched, articleDate) => {
   console.log(`[Image] Generated EN + AR cards (${enBuffer.length + arBuffer.length} bytes total)`);
 
   return {
-    enBuffer,   // PNG Buffer - English card
-    arBuffer,   // PNG Buffer - Arabic card
+    enBuffer,
+    arBuffer,
     enBase64: enBuffer.toString('base64'),
     arBase64: arBuffer.toString('base64')
   };

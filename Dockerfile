@@ -20,4 +20,4 @@ COPY package*.json ./
 RUN npm install
 COPY . .
 
-CMD ["node", "src/run.js"]
+CMD ["node", "src/server.js"]

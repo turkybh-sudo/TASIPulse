@@ -1,6 +1,7 @@
 // src/services/rssService.js
 const axios = require('axios');
 const xml2js = require('xml2js');
+const fs = require('fs');
 
 const SOURCES = {
   argaam: {
@@ -17,16 +18,44 @@ const SOURCES = {
   }
 };
 
+const POSTED_FILE = 'posted.json';
+const MAX_HISTORY = 100; // Remember last 100 posted titles
+
+// ── Posted history helpers ───────────────────────────────────────────────────
+
+const loadPostedTitles = () => {
+  try {
+    if (fs.existsSync(POSTED_FILE)) {
+      const data = JSON.parse(fs.readFileSync(POSTED_FILE, 'utf8'));
+      console.log(`[RSS] Loaded ${data.length} previously posted titles`);
+      return data;
+    }
+  } catch (e) {
+    console.warn('[RSS] Could not load posted history, starting fresh');
+  }
+  return [];
+};
+
+const savePostedTitles = (newTitles) => {
+  try {
+    const existing = loadPostedTitles();
+    const combined = [...existing, ...newTitles];
+    const kept = combined.slice(-MAX_HISTORY); // Keep last 100
+    fs.writeFileSync(POSTED_FILE, JSON.stringify(kept, null, 2));
+    console.log(`[RSS] Saved ${newTitles.length} new titles to history (total: ${kept.length})`);
+  } catch (e) {
+    console.warn('[RSS] Could not save posted history:', e.message);
+  }
+};
+
 // ── Importance scoring weights ───────────────────────────────────────────────
 
-// High-impact companies — major market movers
 const TIER1_COMPANIES = [
   'aramco', 'sabic', 'stc', 'al rajhi', 'alrajhi', 'samba', 'snb',
-  'riyad bank', 'maaden', 'sabic', 'acwa', 'neom', 'pif',
+  'riyad bank', 'maaden', 'acwa', 'neom', 'pif',
   'public investment fund', 'vision 2030'
 ];
 
-// High-impact event keywords — market-moving news
 const HIGH_IMPACT_KEYWORDS = [
   'ipo', 'merger', 'acquisition', 'bankruptcy', 'default',
   'dividend', 'earnings', 'profit', 'loss', 'revenue', 'results',
@@ -36,20 +65,20 @@ const HIGH_IMPACT_KEYWORDS = [
   'sama', 'cma', 'ministry of finance', 'vision 2030'
 ];
 
-// Medium-impact keywords — still relevant but lower priority
 const MEDIUM_IMPACT_KEYWORDS = [
   'saudi', 'riyal', 'sar', 'bank', 'market', 'shares', 'stock',
   'investment', 'financial', 'million', 'percent', 'growth',
   'quarter', 'contract', 'partnership', 'expansion', 'launch'
 ];
 
-// Keywords that reduce importance — minor/routine news
 const LOW_IMPACT_KEYWORDS = [
   'appointment', 'board member', 'agm', 'general assembly',
   'minor', 'routine', 'reminder', 'clarification'
 ];
 
 const FINANCIAL_KEYWORDS = [...HIGH_IMPACT_KEYWORDS, ...MEDIUM_IMPACT_KEYWORDS];
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 const stripHtml = (html) => {
   return html
@@ -63,49 +92,40 @@ const stripHtml = (html) => {
     .trim();
 };
 
-// ── Score an article by importance ──────────────────────────────────────────
-
 const scoreArticle = (article) => {
   const text = (article.title + ' ' + article.description).toLowerCase();
   let score = 0;
 
-  // Tier 1 company mention = very high value
   for (const company of TIER1_COMPANIES) {
     if (text.includes(company)) {
       score += 40;
-      break; // Only count once even if multiple mentions
+      break;
     }
   }
 
-  // High-impact event keywords
   for (const kw of HIGH_IMPACT_KEYWORDS) {
     if (text.includes(kw)) score += 15;
   }
 
-  // Medium-impact keywords
   for (const kw of MEDIUM_IMPACT_KEYWORDS) {
     if (text.includes(kw)) score += 5;
   }
 
-  // Low-impact penalty
   for (const kw of LOW_IMPACT_KEYWORDS) {
     if (text.includes(kw)) score -= 10;
   }
 
-  // Numerical figures boost (market-moving news usually has numbers)
   const numberMatches = text.match(/\d+(\.\d+)?[\s]*(billion|million|trillion|%|percent|sar|riyal)/g);
   if (numberMatches) score += numberMatches.length * 8;
 
-  // Recency boost — articles from last 6 hours get a bonus
   const ageHours = (Date.now() - new Date(article.date).getTime()) / (1000 * 60 * 60);
   if (ageHours < 2) score += 20;
   else if (ageHours < 6) score += 10;
-  else if (ageHours > 24) score -= 15; // Penalize old news
+  else if (ageHours > 24) score -= 15;
 
-  // Source boost — Argaam main news is more curated than disclosures
   if (article.source === 'Argaam') score += 10;
 
-  return Math.max(0, score); // Never negative
+  return Math.max(0, score);
 };
 
 const fetchSource = async (name, url) => {
@@ -169,27 +189,42 @@ const fetchTopArticles = async (limit = 3) => {
     throw new Error('All RSS sources failed to return articles');
   }
 
-  // Filter to financially relevant articles only
+  // Filter to financially relevant articles
   const filtered = articles.filter(a => {
     if (a.source === 'Disclosures') return true;
     const text = (a.title + ' ' + a.description).toLowerCase();
     return FINANCIAL_KEYWORDS.some(kw => text.includes(kw));
   });
 
-  // Score and sort by importance
+  // Score articles
   const scored = filtered
     .map(a => ({ ...a, score: scoreArticle(a) }))
     .sort((a, b) => b.score - a.score);
 
-  // Log top candidates so you can see why articles were chosen
+  // Log top candidates
   console.log('[RSS] Top scored articles:');
   scored.slice(0, 6).forEach((a, i) => {
     console.log(`  ${i + 1}. [${a.score}pts] ${a.title.substring(0, 70)}`);
   });
 
-  const selected = scored.slice(0, limit);
+  // Filter out already posted articles
+  const postedTitles = loadPostedTitles();
+  const deduped = scored.filter(a => {
+    const normalised = a.title.toLowerCase().trim();
+    const alreadyPosted = postedTitles.some(t =>
+      t.toLowerCase().trim() === normalised
+    );
+    if (alreadyPosted) {
+      console.log(`[RSS] ⏭️  Skipping already posted: ${a.title.substring(0, 60)}`);
+    }
+    return !alreadyPosted;
+  });
+
+  console.log(`[RSS] ${deduped.length} fresh articles after deduplication`);
+
+  const selected = deduped.slice(0, limit);
   console.log(`[RSS] Selected ${selected.length} articles after importance scoring`);
   return selected;
 };
 
-module.exports = { fetchTopArticles };
+module.exports = { fetchTopArticles, savePostedTitles };

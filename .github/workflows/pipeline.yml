@@ -33,6 +33,14 @@ jobs:
         if: steps.cache-npm.outputs.cache-hit != 'true'
         run: npm install
 
+      - name: Cache posted articles history
+        uses: actions/cache@v4
+        with:
+          path: posted.json
+          key: posted-history-${{ github.run_number }}
+          restore-keys: |
+            posted-history-
+
       - name: Install Chromium dependencies
         run: |
           sudo apt-get update -q

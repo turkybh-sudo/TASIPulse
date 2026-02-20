@@ -53,11 +53,18 @@ const uploadMedia = async (imageBuffer, credentials, label) => {
   };
 
   const initHeader = generateOAuthHeader('POST', uploadUrl, initParams, credentials);
-  const initResponse = await axios.post(
-    uploadUrl,
-    new URLSearchParams(initParams).toString(),
-    { headers: { Authorization: initHeader, 'Content-Type': 'application/x-www-form-urlencoded' } }
-  );
+
+  let initResponse;
+  try {
+    initResponse = await axios.post(
+      uploadUrl,
+      new URLSearchParams(initParams).toString(),
+      { headers: { Authorization: initHeader, 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+  } catch (err) {
+    console.error(`[X] ${label} INIT failed:`, JSON.stringify(err.response?.data, null, 2));
+    throw err;
+  }
 
   const mediaId = initResponse.data.media_id_string;
   console.log(`[X] ${label} INIT - ID: ${mediaId}`);
@@ -77,25 +84,37 @@ const uploadMedia = async (imageBuffer, credentials, label) => {
   const bodySuffix = Buffer.from(`\r\n--${boundary}--\r\n`);
   const multipartBody = Buffer.concat([bodyPrefix, imageBuffer, bodySuffix]);
 
-  await axios.post(uploadUrl, multipartBody, {
-    headers: {
-      Authorization: appendHeader,
-      'Content-Type': `multipart/form-data; boundary=${boundary}`,
-      'Content-Length': multipartBody.length
-    },
-    maxBodyLength: Infinity
-  });
+  try {
+    await axios.post(uploadUrl, multipartBody, {
+      headers: {
+        Authorization: appendHeader,
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': multipartBody.length
+      },
+      maxBodyLength: Infinity
+    });
+  } catch (err) {
+    console.error(`[X] ${label} APPEND failed:`, JSON.stringify(err.response?.data, null, 2));
+    throw err;
+  }
 
   console.log(`[X] ${label} APPEND done`);
 
   // FINALIZE
   const finalizeParams = { command: 'FINALIZE', media_id: mediaId };
   const finalizeHeader = generateOAuthHeader('POST', uploadUrl, finalizeParams, credentials);
-  const finalizeResponse = await axios.post(
-    uploadUrl,
-    new URLSearchParams(finalizeParams).toString(),
-    { headers: { Authorization: finalizeHeader, 'Content-Type': 'application/x-www-form-urlencoded' } }
-  );
+
+  let finalizeResponse;
+  try {
+    finalizeResponse = await axios.post(
+      uploadUrl,
+      new URLSearchParams(finalizeParams).toString(),
+      { headers: { Authorization: finalizeHeader, 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+  } catch (err) {
+    console.error(`[X] ${label} FINALIZE failed:`, JSON.stringify(err.response?.data, null, 2));
+    throw err;
+  }
 
   console.log(`[X] ${label} FINALIZE done - state: ${finalizeResponse.data?.processing_info?.state || 'ready'}`);
   return mediaId;
@@ -115,18 +134,22 @@ const postToX = async ({ enBuffer, arBuffer, enriched }) => {
 
   console.log('[X] Starting post pipeline...');
 
-  // Upload sequentially to avoid any timing conflicts
+  // Upload EN image
   const enMediaId = await uploadMedia(enBuffer, credentials, 'EN');
+
+  // Upload AR image
   const arMediaId = await uploadMedia(arBuffer, credentials, 'AR');
 
   const caption = buildXCaption(enriched);
-  console.log(`[X] Caption length: ${caption.length} chars`);
+  console.log(`[X] Caption (${caption.length} chars):\n${caption}`);
 
   const tweetUrl = 'https://api.twitter.com/2/tweets';
   const tweetBody = {
     text: caption,
     media: { media_ids: [enMediaId, arMediaId] }
   };
+
+  console.log('[X] Sending tweet with body:', JSON.stringify(tweetBody, null, 2));
 
   const tweetHeader = generateOAuthHeader('POST', tweetUrl, {}, credentials);
 
@@ -139,9 +162,8 @@ const postToX = async ({ enBuffer, arBuffer, enriched }) => {
       }
     });
   } catch (err) {
-    // Log the full X error detail for debugging
-    const detail = err.response?.data;
-    console.error('[X] Tweet post error detail:', JSON.stringify(detail, null, 2));
+    console.error('[X] Tweet post failed with status:', err.response?.status);
+    console.error('[X] Tweet post error detail:', JSON.stringify(err.response?.data, null, 2));
     throw err;
   }
 

@@ -1,13 +1,8 @@
 // src/pipeline.js
-// Main automation pipeline: RSS → Gemini → Images → Publish
-
-const { fetchTopArticles } = require('./services/rssService');
+const { fetchTopArticles, savePostedTitles } = require('./services/rssService');
 const { enrichArticles } = require('./services/geminiService');
 const { generatePostImages } = require('./services/imageService');
 const { postToX } = require('./services/xService');
-// Future: const { postToInstagram } = require('./services/instagramService');
-// Future: const { postToYouTube } = require('./services/youtubeService');
-// Future: const { postToTikTok } = require('./services/tiktokService');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -44,6 +39,8 @@ const runPipeline = async () => {
   }
 
   // ── STEP 3 & 4: Generate images and post for each article ─────────────────
+  const successfullyPosted = [];
+
   for (let i = 0; i < enrichedPairs.length; i++) {
     const { article, enriched } = enrichedPairs[i];
 
@@ -77,37 +74,58 @@ const runPipeline = async () => {
       const xResult = await postToX({ ...images, enriched });
       articleResult.platforms.x = xResult;
       console.log(`[Pipeline] ✅ X: Tweet ${xResult.tweetId}`);
+
+      // Only mark as posted if X succeeded
+      successfullyPosted.push({ title: article.title, url: article.url });
+
     } catch (err) {
       console.error(`[Pipeline] ❌ X failed: ${err.message}`);
       articleResult.platforms.x = { success: false, error: err.message };
     }
 
-    // Future platform calls go here:
+    // Future platforms:
     // try { articleResult.platforms.instagram = await postToInstagram({...images, enriched}); } catch (e) {...}
     // try { articleResult.platforms.youtube   = await postToYouTube({...images, enriched}); }   catch (e) {...}
     // try { articleResult.platforms.tiktok    = await postToTikTok({...images, enriched}); }    catch (e) {...}
 
     results.push(articleResult);
 
-    // Delay between articles to be respectful to APIs
     if (i < enrichedPairs.length - 1) {
       console.log('[Pipeline] Waiting 5s before next article...');
       await sleep(5000);
     }
   }
 
+  // ── Save successfully posted articles to history ───────────────────────────
+  if (successfullyPosted.length > 0) {
+    savePostedTitles(successfullyPosted);
+    console.log(`[Pipeline] 📝 Saved ${successfullyPosted.length} articles to posted history`);
+  }
+
   const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+  const successCount = results.filter(r => r.platforms?.x?.success).length;
 
   console.log('\n========================================');
   console.log(`[Pipeline] ✅ Done in ${duration}s`);
   console.log('========================================\n');
 
-  return {
-    success: true,
-    duration: `${duration}s`,
-    articlesProcessed: results.length,
-    results
-  };
+  console.log('📊 Pipeline Summary:');
+  console.log(`   Articles processed: ${results.length}`);
+  console.log(`   Successfully posted: ${successCount}`);
+  console.log(`   Duration: ${duration}s`);
+  results.forEach((r, idx) => {
+    const xStatus = r.platforms?.x?.success
+      ? `✅ Tweet ${r.platforms.x.tweetId}`
+      : `❌ ${r.platforms?.x?.error || r.error}`;
+    console.log(`   [${idx + 1}] ${r.title.substring(0, 55)}`);
+    console.log(`       x: ${xStatus}`);
+  });
+
+  if (successCount === 0) {
+    throw new Error('No posts were successfully published.');
+  }
+
+  return { success: true, duration: `${duration}s`, articlesProcessed: results.length, results };
 };
 
 module.exports = { runPipeline };

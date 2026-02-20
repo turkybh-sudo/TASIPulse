@@ -1,6 +1,7 @@
 // src/services/xService.js
 const axios = require('axios');
 const crypto = require('crypto');
+const FormData = require('form-data');
 
 const percentEncode = (str) =>
   encodeURIComponent(str).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
@@ -69,29 +70,27 @@ const uploadMedia = async (imageBuffer, credentials, label) => {
   const mediaId = initResponse.data.media_id_string;
   console.log(`[X] ${label} INIT - ID: ${mediaId}`);
 
-  // APPEND
+  // APPEND (use FormData; do NOT hand-roll multipart)
   const appendHeader = generateOAuthHeader('POST', uploadUrl, {}, credentials);
-  const boundary = `----TasiPulseBoundary${Date.now()}`;
 
-  const bodyParts = [
-    `--${boundary}\r\nContent-Disposition: form-data; name="command"\r\n\r\nAPPEND`,
-    `--${boundary}\r\nContent-Disposition: form-data; name="media_id"\r\n\r\n${mediaId}`,
-    `--${boundary}\r\nContent-Disposition: form-data; name="segment_index"\r\n\r\n0`,
-    `--${boundary}\r\nContent-Disposition: form-data; name="media"; filename="image.png"\r\nContent-Type: image/png\r\n\r\n`
-  ];
-
-  const bodyPrefix = Buffer.from(bodyParts.join('\r\n') + '\r\n');
-  const bodySuffix = Buffer.from(`\r\n--${boundary}--\r\n`);
-  const multipartBody = Buffer.concat([bodyPrefix, imageBuffer, bodySuffix]);
+  const form = new FormData();
+  form.append('command', 'APPEND');
+  form.append('media_id', mediaId);
+  form.append('segment_index', '0');
+  form.append('media', imageBuffer, {
+    filename: 'image.png',
+    contentType: 'image/png',
+    knownLength: imageBuffer.length
+  });
 
   try {
-    await axios.post(uploadUrl, multipartBody, {
+    await axios.post(uploadUrl, form, {
       headers: {
         Authorization: appendHeader,
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        'Content-Length': multipartBody.length
+        ...form.getHeaders()
       },
-      maxBodyLength: Infinity
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity
     });
   } catch (err) {
     console.error(`[X] ${label} APPEND failed:`, JSON.stringify(err.response?.data, null, 2));
@@ -116,60 +115,57 @@ const uploadMedia = async (imageBuffer, credentials, label) => {
     throw err;
   }
 
-  console.log(`[X] ${label} FINALIZE done - state: ${finalizeResponse.data?.processing_info?.state || 'ready'}`);
+  const state = finalizeResponse.data?.processing_info?.state || 'ready';
+  console.log(`[X] ${label} FINALIZE done - state: ${state}`);
+
+  // If X says it's processing, poll until done (safe for production)
+  if (finalizeResponse.data?.processing_info) {
+    const info = finalizeResponse.data.processing_info;
+    if (info.state === 'pending' || info.state === 'in_progress') {
+      const checkAfterSecs = info.check_after_secs || 2;
+      await new Promise(r => setTimeout(r, checkAfterSecs * 1000));
+      await waitForMediaProcessing(mediaId, credentials, label);
+    }
+  }
+
   return mediaId;
 };
 
-const postToX = async ({ enBuffer, arBuffer, enriched }) => {
-  const credentials = {
-    apiKey: process.env.X_API_KEY,
-    apiSecret: process.env.X_API_SECRET,
-    accessToken: process.env.X_ACCESS_TOKEN,
-    accessTokenSecret: process.env.X_ACCESS_TOKEN_SECRET
-  };
+const waitForMediaProcessing = async (mediaId, credentials, label) => {
+  const statusUrl = 'https://upload.twitter.com/1.1/media/upload.json';
+  // STATUS uses command=STATUS&media_id=...
+  const params = { command: 'STATUS', media_id: mediaId };
 
-  if (!credentials.apiKey || !credentials.accessToken) {
-    throw new Error('X credentials not configured');
-  }
+  for (let i = 0; i < 15; i++) {
+    const header = generateOAuthHeader('GET', statusUrl, params, credentials);
 
-  console.log('[X] Starting post pipeline...');
+    try {
+      const res = await axios.get(statusUrl, {
+        params,
+        headers: { Authorization: header }
+      });
 
-  // Upload EN image
-  const enMediaId = await uploadMedia(enBuffer, credentials, 'EN');
+      const info = res.data?.processing_info;
+      const state = info?.state || 'ready';
+      console.log(`[X] ${label} STATUS - state: ${state}`);
 
-  // Upload AR image
-  const arMediaId = await uploadMedia(arBuffer, credentials, 'AR');
+      if (!info) return;
 
-  const caption = buildXCaption(enriched);
-  console.log(`[X] Caption (${caption.length} chars):\n${caption}`);
+      if (state === 'succeeded') return;
 
-  const tweetUrl = 'https://api.twitter.com/2/tweets';
-  const tweetBody = {
-    text: caption,
-    media: { media_ids: [enMediaId, arMediaId] }
-  };
-
-  console.log('[X] Sending tweet with body:', JSON.stringify(tweetBody, null, 2));
-
-  const tweetHeader = generateOAuthHeader('POST', tweetUrl, {}, credentials);
-
-  let response;
-  try {
-    response = await axios.post(tweetUrl, tweetBody, {
-      headers: {
-        Authorization: tweetHeader,
-        'Content-Type': 'application/json'
+      if (state === 'failed') {
+        throw new Error(`[X] ${label} Media processing failed: ${JSON.stringify(info, null, 2)}`);
       }
-    });
-  } catch (err) {
-    console.error('[X] Tweet post failed with status:', err.response?.status);
-    console.error('[X] Tweet post error detail:', JSON.stringify(err.response?.data, null, 2));
-    throw err;
+
+      const wait = (info.check_after_secs || 2) * 1000;
+      await new Promise(r => setTimeout(r, wait));
+    } catch (err) {
+      console.error(`[X] ${label} STATUS check failed:`, JSON.stringify(err.response?.data, null, 2));
+      throw err;
+    }
   }
 
-  const tweetId = response.data?.data?.id;
-  console.log(`[X] ✅ Posted! Tweet ID: ${tweetId}`);
-  return { success: true, tweetId, platform: 'x' };
+  throw new Error(`[X] ${label} Media processing timeout (media_id=${mediaId})`);
 };
 
 const buildXCaption = (enriched) => {
@@ -187,4 +183,4 @@ const buildXCaption = (enriched) => {
   return en.substring(0, 272) + '...';
 };
 
-module.exports = { postToX };
+const postToX = async ({ enBuffer, arBuffer,

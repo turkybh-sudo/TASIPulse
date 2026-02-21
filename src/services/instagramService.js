@@ -10,43 +10,66 @@ const postToInstagram = async ({ enBuffer, arBuffer, enriched }) => {
   if (!token || !accountId) throw new Error('Instagram credentials not configured');
 
   const caption = buildCaption(enriched);
-  console.log('[IG] Starting Instagram post...');
+  console.log('[IG] Starting Instagram carousel post...');
 
-  // Upload EN image as container
-  const enMediaId = await uploadImage(enBuffer, caption, token, accountId);
-  console.log(`[IG] EN container created: ${enMediaId}`);
+  // Upload both images to imgbb first
+  const enUrl = await uploadToImgbb(enBuffer);
+  console.log(`[IG] EN image uploaded`);
+  const arUrl = await uploadToImgbb(arBuffer);
+  console.log(`[IG] AR image uploaded`);
+
+  // Create carousel children (no caption on children)
+  const enChildId = await createCarouselChild(enUrl, token, accountId);
+  console.log(`[IG] EN child container: ${enChildId}`);
+  const arChildId = await createCarouselChild(arUrl, token, accountId);
+  console.log(`[IG] AR child container: ${arChildId}`);
+
+  // Wait for both children to be ready
+  await waitForContainer(enChildId, token);
+  await waitForContainer(arChildId, token);
+
+  // Create carousel container
+  const carouselId = await createCarouselContainer(
+    [enChildId, arChildId], caption, token, accountId
+  );
+  console.log(`[IG] Carousel container: ${carouselId}`);
+
+  // Wait for carousel to be ready
+  await waitForContainer(carouselId, token);
 
   // Publish
-  const postId = await publishContainer(enMediaId, token, accountId);
-  console.log(`[IG] ✅ Posted! Post ID: ${postId}`);
+  const postId = await publishContainer(carouselId, token, accountId);
+  console.log(`[IG] ✅ Posted carousel! Post ID: ${postId}`);
 
   return { success: true, postId, platform: 'instagram' };
 };
 
-const uploadImage = async (imageBuffer, caption, token, accountId) => {
-  // Step 1: Upload image to imgbb or use container URL approach
-  // Instagram requires a public URL, so we upload buffer to a temp host
-  const imageUrl = await uploadToImgbb(imageBuffer);
-
+const createCarouselChild = async (imageUrl, token, accountId) => {
   const res = await axios.post(`${BASE_URL}/${accountId}/media`, {
     image_url: imageUrl,
+    is_carousel_item: true,
+    access_token: token
+  });
+  if (!res.data?.id) throw new Error('Failed to create carousel child');
+  return res.data.id;
+};
+
+const createCarouselContainer = async (childIds, caption, token, accountId) => {
+  const res = await axios.post(`${BASE_URL}/${accountId}/media`, {
+    media_type: 'CAROUSEL',
+    children: childIds.join(','),
     caption,
     access_token: token
   });
-
-  if (!res.data?.id) throw new Error('Failed to create media container');
+  if (!res.data?.id) throw new Error('Failed to create carousel container');
   return res.data.id;
 };
 
 const publishContainer = async (containerId, token, accountId) => {
-  // Wait for container to be ready
-  await waitForContainer(containerId, token);
-
   const res = await axios.post(`${BASE_URL}/${accountId}/media_publish`, {
     creation_id: containerId,
     access_token: token
   });
-
   if (!res.data?.id) throw new Error('Failed to publish media');
   return res.data.id;
 };
@@ -57,9 +80,9 @@ const waitForContainer = async (containerId, token) => {
       params: { fields: 'status_code', access_token: token }
     });
     const status = res.data?.status_code;
-    console.log(`[IG] Container status: ${status}`);
+    console.log(`[IG] Container ${containerId} status: ${status}`);
     if (status === 'FINISHED') return;
-    if (status === 'ERROR') throw new Error('Media container processing failed');
+    if (status === 'ERROR') throw new Error(`Container ${containerId} processing failed`);
     await new Promise(r => setTimeout(r, 3000));
   }
   throw new Error('Media container timeout');
@@ -77,7 +100,6 @@ const uploadToImgbb = async (imageBuffer) => {
 
   const url = res.data?.data?.url;
   if (!url) throw new Error('imgbb upload failed');
-  console.log(`[IG] Image uploaded to: ${url}`);
   return url;
 };
 

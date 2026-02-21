@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
 
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_CACHE_DIR=/tmp/puppeteer
 
 WORKDIR /app
 COPY package*.json ./

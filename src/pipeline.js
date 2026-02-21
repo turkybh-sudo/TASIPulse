@@ -2,7 +2,7 @@
 const { fetchTopArticles, savePostedTitles } = require('./services/rssService');
 const { enrichArticles } = require('./services/geminiService');
 const { generatePostImages } = require('./services/imageService');
-const { saveDraft, clearDrafts } = require('./services/draftService');
+const { postToInstagram } = require('./services/instagramService');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -14,9 +14,6 @@ const runPipeline = async () => {
   console.log(`[Pipeline] 🚀 Starting at ${new Date().toISOString()}`);
   console.log('========================================\n');
 
-  // Clear old drafts at start of each run
-  clearDrafts();
-
   // ── STEP 1: Fetch top 3 articles ──────────────────────────────────────────
   console.log('[Pipeline] Step 1: Fetching articles...');
   let articles;
@@ -25,6 +22,10 @@ const runPipeline = async () => {
     console.log(`[Pipeline] ✅ Fetched ${articles.length} articles\n`);
   } catch (err) {
     throw new Error(`RSS fetch failed: ${err.message}`);
+  }
+
+  if (articles.length === 0) {
+    throw new Error('No fresh articles found — all recent articles already posted');
   }
 
   // ── STEP 2: Enrich with Gemini ────────────────────────────────────────────
@@ -41,8 +42,8 @@ const runPipeline = async () => {
     throw new Error('No articles were successfully enriched');
   }
 
-  // ── STEP 3 & 4: Generate images and save drafts ───────────────────────────
-  const successfullyProcessed = [];
+  // ── STEP 3 & 4: Generate images and post ─────────────────────────────────
+  const successfullyPosted = [];
 
   for (let i = 0; i < enrichedPairs.length; i++) {
     const { article, enriched } = enrichedPairs[i];
@@ -53,7 +54,7 @@ const runPipeline = async () => {
     const articleResult = {
       title: article.title,
       source: article.source,
-      status: 'pending'
+      platforms: {}
     };
 
     // Step 3: Generate images
@@ -64,23 +65,21 @@ const runPipeline = async () => {
       console.log('[Pipeline] ✅ Images generated\n');
     } catch (err) {
       console.error(`[Pipeline] ❌ Image generation failed: ${err.message}`);
-      articleResult.status = 'failed';
-      articleResult.error = err.message;
+      articleResult.error = `Image generation failed: ${err.message}`;
       results.push(articleResult);
       continue;
     }
 
-    // Step 4: Save draft
-    console.log('[Pipeline] Step 4: Saving draft...');
+    // Step 4: Post to Instagram
+    console.log('[Pipeline] Step 4: Publishing to Instagram...');
     try {
-      saveDraft(i + 1, images.enBuffer, images.arBuffer, enriched, article);
-      articleResult.status = 'draft_ready';
-      successfullyProcessed.push({ title: article.title, url: article.url });
-      console.log(`[Pipeline] ✅ Draft ${i + 1} saved`);
+      const igResult = await postToInstagram({ ...images, enriched });
+      articleResult.platforms.instagram = igResult;
+      console.log(`[Pipeline] ✅ Instagram: Post ${igResult.postId}`);
+      successfullyPosted.push({ title: article.title, url: article.url });
     } catch (err) {
-      console.error(`[Pipeline] ❌ Draft save failed: ${err.message}`);
-      articleResult.status = 'failed';
-      articleResult.error = err.message;
+      console.error(`[Pipeline] ❌ Instagram failed: ${err.message}`);
+      articleResult.platforms.instagram = { success: false, error: err.message };
     }
 
     results.push(articleResult);
@@ -91,14 +90,14 @@ const runPipeline = async () => {
     }
   }
 
-  // Save to posted history so we don't re-fetch same articles
-  if (successfullyProcessed.length > 0) {
-    savePostedTitles(successfullyProcessed);
-    console.log(`[Pipeline] 📝 Saved ${successfullyProcessed.length} articles to history`);
+  // ── Save successfully posted articles to history ───────────────────────────
+  if (successfullyPosted.length > 0) {
+    await savePostedTitles(successfullyPosted);
+    console.log(`[Pipeline] 📝 Saved ${successfullyPosted.length} articles to history`);
   }
 
   const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-  const draftCount = results.filter(r => r.status === 'draft_ready').length;
+  const successCount = results.filter(r => r.platforms?.instagram?.success).length;
 
   console.log('\n========================================');
   console.log(`[Pipeline] ✅ Done in ${duration}s`);
@@ -106,23 +105,24 @@ const runPipeline = async () => {
 
   console.log('📊 Pipeline Summary:');
   console.log(`   Articles processed: ${results.length}`);
-  console.log(`   Drafts ready: ${draftCount}`);
+  console.log(`   Successfully posted: ${successCount}`);
   console.log(`   Duration: ${duration}s`);
   results.forEach((r, idx) => {
-    const status = r.status === 'draft_ready' ? '✅ Draft ready' : `❌ ${r.error}`;
+    const igStatus = r.platforms?.instagram?.success
+      ? `✅ Post ${r.platforms.instagram.postId}`
+      : `❌ ${r.platforms?.instagram?.error || r.error}`;
     console.log(`   [${idx + 1}] ${r.title.substring(0, 55)}`);
-    console.log(`       ${status}`);
+    console.log(`       instagram: ${igStatus}`);
   });
 
-  if (draftCount === 0) {
-    throw new Error('No drafts were successfully prepared.');
+  if (successCount === 0) {
+    throw new Error('No posts were successfully published.');
   }
 
   return {
     success: true,
     duration: `${duration}s`,
     articlesProcessed: results.length,
-    draftsReady: draftCount,
     results
   };
 };

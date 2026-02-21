@@ -70,7 +70,7 @@ const uploadMedia = async (imageBuffer, credentials, label) => {
   const mediaId = initResponse.data.media_id_string;
   console.log(`[X] ${label} INIT - ID: ${mediaId}`);
 
-  // APPEND (use FormData; do NOT hand-roll multipart)
+  // APPEND
   const appendHeader = generateOAuthHeader('POST', uploadUrl, {}, credentials);
 
   const form = new FormData();
@@ -118,7 +118,6 @@ const uploadMedia = async (imageBuffer, credentials, label) => {
   const state = finalizeResponse.data?.processing_info?.state || 'ready';
   console.log(`[X] ${label} FINALIZE done - state: ${state}`);
 
-  // If X says it's processing, poll until done (safe for production)
   if (finalizeResponse.data?.processing_info) {
     const info = finalizeResponse.data.processing_info;
     if (info.state === 'pending' || info.state === 'in_progress') {
@@ -133,7 +132,6 @@ const uploadMedia = async (imageBuffer, credentials, label) => {
 
 const waitForMediaProcessing = async (mediaId, credentials, label) => {
   const statusUrl = 'https://upload.twitter.com/1.1/media/upload.json';
-  // STATUS uses command=STATUS&media_id=...
   const params = { command: 'STATUS', media_id: mediaId };
 
   for (let i = 0; i < 15; i++) {
@@ -150,9 +148,7 @@ const waitForMediaProcessing = async (mediaId, credentials, label) => {
       console.log(`[X] ${label} STATUS - state: ${state}`);
 
       if (!info) return;
-
       if (state === 'succeeded') return;
-
       if (state === 'failed') {
         throw new Error(`[X] ${label} Media processing failed: ${JSON.stringify(info, null, 2)}`);
       }
@@ -183,4 +179,53 @@ const buildXCaption = (enriched) => {
   return en.substring(0, 272) + '...';
 };
 
-const postToX = async ({ enBuffer, arBuffer,
+const postToX = async ({ enBuffer, arBuffer, enriched }) => {
+  const credentials = {
+    apiKey: process.env.X_API_KEY,
+    apiSecret: process.env.X_API_SECRET,
+    accessToken: process.env.X_ACCESS_TOKEN,
+    accessTokenSecret: process.env.X_ACCESS_TOKEN_SECRET
+  };
+
+  if (!credentials.apiKey || !credentials.accessToken) {
+    throw new Error('X credentials not configured');
+  }
+
+  console.log('[X] Starting post pipeline...');
+
+  const enMediaId = await uploadMedia(enBuffer, credentials, 'EN');
+  const arMediaId = await uploadMedia(arBuffer, credentials, 'AR');
+
+  const caption = buildXCaption(enriched);
+  console.log(`[X] Caption (${caption.length} chars):\n${caption}`);
+
+  const tweetUrl = 'https://api.twitter.com/2/tweets';
+  const tweetBody = {
+    text: caption,
+    media: { media_ids: [enMediaId, arMediaId] }
+  };
+
+  console.log('[X] Sending tweet...');
+
+  const tweetHeader = generateOAuthHeader('POST', tweetUrl, {}, credentials);
+
+  let response;
+  try {
+    response = await axios.post(tweetUrl, tweetBody, {
+      headers: {
+        Authorization: tweetHeader,
+        'Content-Type': 'application/json'
+      }
+    });
+  } catch (err) {
+    console.error('[X] Tweet post failed with status:', err.response?.status);
+    console.error('[X] Tweet post error detail:', JSON.stringify(err.response?.data, null, 2));
+    throw err;
+  }
+
+  const tweetId = response.data?.data?.id;
+  console.log(`[X] ✅ Posted! Tweet ID: ${tweetId}`);
+  return { success: true, tweetId, platform: 'x' };
+};
+
+module.exports = { postToX };

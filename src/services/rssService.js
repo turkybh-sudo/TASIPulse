@@ -18,34 +18,118 @@ const SOURCES = {
   }
 };
 
-const POSTED_FILE = 'posted.json';
-const MAX_HISTORY = 100;
+const POSTED_FILE = '/tmp/posted.json';
+const GCS_BUCKET = process.env.GCS_BUCKET;         // e.g. "tasipulse-history"
+const GCS_OBJECT = 'posted.json';
+const MAX_HISTORY = 200;
+
+// ── GCS helpers ──────────────────────────────────────────────────────────────
+
+const gcsUrl = () =>
+  `https://storage.googleapis.com/${GCS_BUCKET}/${GCS_OBJECT}`;
+
+const gcsUploadUrl = () =>
+  `https://storage.googleapis.com/upload/storage/v1/b/${GCS_BUCKET}/o?uploadType=media&name=${GCS_OBJECT}`;
+
+const getGCSToken = async () => {
+  try {
+    const res = await axios.get(
+      'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
+      { headers: { 'Metadata-Flavor': 'Google' }, timeout: 3000 }
+    );
+    return res.data?.access_token;
+  } catch {
+    return null;
+  }
+};
+
+const loadFromGCS = async () => {
+  if (!GCS_BUCKET) return null;
+  try {
+    const token = await getGCSToken();
+    if (!token) return null;
+    const res = await axios.get(gcsUrl(), {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 5000
+    });
+    console.log(`[RSS] Loaded ${res.data.length} articles from GCS history`);
+    return res.data;
+  } catch (e) {
+    if (e.response?.status === 404) {
+      console.log('[RSS] No GCS history yet, starting fresh');
+      return [];
+    }
+    console.warn('[RSS] GCS load failed:', e.message);
+    return null;
+  }
+};
+
+const saveToGCS = async (data) => {
+  if (!GCS_BUCKET) return false;
+  try {
+    const token = await getGCSToken();
+    if (!token) return false;
+    await axios.post(gcsUploadUrl(), JSON.stringify(data), {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 5000
+    });
+    console.log(`[RSS] Saved ${data.length} articles to GCS history`);
+    return true;
+  } catch (e) {
+    console.warn('[RSS] GCS save failed:', e.message);
+    return false;
+  }
+};
 
 // ── Posted history helpers ───────────────────────────────────────────────────
 
-const loadPostedHistory = () => {
+const loadPostedHistory = async () => {
+  // Try GCS first (persistent across restarts)
+  const gcsData = await loadFromGCS();
+  if (gcsData !== null) {
+    // Also cache locally for this run
+    try { fs.writeFileSync(POSTED_FILE, JSON.stringify(gcsData)); } catch {}
+    return gcsData;
+  }
+
+  // Fallback to local /tmp (only survives within same container instance)
   try {
     if (fs.existsSync(POSTED_FILE)) {
       const data = JSON.parse(fs.readFileSync(POSTED_FILE, 'utf8'));
-      console.log(`[RSS] Loaded ${data.length} previously posted articles`);
+      console.log(`[RSS] Loaded ${data.length} articles from local history`);
       return data;
     }
   } catch (e) {
-    console.warn('[RSS] Could not load posted history, starting fresh');
+    console.warn('[RSS] Could not load local history:', e.message);
   }
   return [];
 };
 
-const savePostedTitles = (articles) => {
+const savePostedTitles = async (articles) => {
   try {
-    const existing = loadPostedHistory();
+    const existing = await loadPostedHistory();
     const newEntries = articles.map(a => ({
       title: typeof a === 'string' ? a : a.title,
-      url: typeof a === 'string' ? null : a.url
+      url: typeof a === 'string' ? null : a.url,
+      postedAt: new Date().toISOString()
     }));
     const combined = [...existing, ...newEntries];
     const kept = combined.slice(-MAX_HISTORY);
-    fs.writeFileSync(POSTED_FILE, JSON.stringify(kept, null, 2));
+
+    // Save to GCS (persistent)
+    const gcsSaved = await saveToGCS(kept);
+
+    // Always save locally too
+    try { fs.writeFileSync(POSTED_FILE, JSON.stringify(kept, null, 2)); } catch {}
+
+    if (!gcsSaved) {
+      console.warn('[RSS] ⚠️  GCS unavailable - history only in local /tmp (will reset on restart)');
+      console.warn('[RSS] ⚠️  Set GCS_BUCKET env var to enable persistent history');
+    }
+
     console.log(`[RSS] Saved ${newEntries.length} new articles to history (total: ${kept.length})`);
   } catch (e) {
     console.warn('[RSS] Could not save posted history:', e.message);
@@ -101,20 +185,14 @@ const scoreArticle = (article) => {
   let score = 0;
 
   for (const company of TIER1_COMPANIES) {
-    if (text.includes(company)) {
-      score += 40;
-      break;
-    }
+    if (text.includes(company)) { score += 40; break; }
   }
-
   for (const kw of HIGH_IMPACT_KEYWORDS) {
     if (text.includes(kw)) score += 15;
   }
-
   for (const kw of MEDIUM_IMPACT_KEYWORDS) {
     if (text.includes(kw)) score += 5;
   }
-
   for (const kw of LOW_IMPACT_KEYWORDS) {
     if (text.includes(kw)) score -= 10;
   }
@@ -211,8 +289,8 @@ const fetchTopArticles = async (limit = 3) => {
     console.log(`  ${i + 1}. [${a.score}pts] ${a.title.substring(0, 70)}`);
   });
 
-  // Filter out already posted articles (by URL first, fall back to title)
-  const postedHistory = loadPostedHistory();
+  // Filter out already posted articles
+  const postedHistory = await loadPostedHistory();
   const deduped = scored.filter(a => {
     const alreadyPosted = postedHistory.some(p => {
       if (p.url && a.url) return p.url === a.url;
